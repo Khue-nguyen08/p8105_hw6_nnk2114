@@ -1,0 +1,233 @@
+---
+title: "p8105_hw6_nnk"
+output: github_document
+---
+
+```{r setup , include = FALSE}
+library(tidyverse)
+library(p8105.datasets)
+library(ggplot2)
+library(modelr)
+library(mgcv)
+library(broom)
+
+set.seed(1)
+#library(readxl)
+#library(haven)
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+## Problem 1
+**import dataset**
+```{r, message= FALSE}
+homicide_df= 
+  read_csv("./data/homicide-data.csv") |>
+  janitor::clean_names()
+
+```
+
+**cleaning the data**
+
+```{r, warning=FALSE}
+homicide_df = 
+  homicide_df |>
+   mutate(
+  city_state = str_c(city, state, sep = ", "),
+  resolved  = if_else(disposition == "Closed by arrest", 1, 0),
+  victim_age = as.numeric(victim_age)
+  ) |> 
+  
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", 
+                       "Kansas City, MO", "Tulsa, AL"),
+    victim_race %in% c("White", "Black")
+  ) |> 
+  drop_na(victim_age, victim_sex, victim_race)
+
+```
+
+ **GLM regression**
+```{r}
+baltimore_df = 
+  homicide_df |> 
+  filter(city_state == "Baltimore, MD")
+
+baltimore_fit = 
+  baltimore_df |> 
+  glm(
+    resolved ~ victim_age + victim_sex + victim_race,
+    data   = _,
+    family = binomial()
+  )
+
+baltimore_or = 
+  baltimore_fit |> 
+  tidy(conf.int = TRUE, exponentiate = TRUE) |> 
+  filter(term == "victim_sexMale") |> 
+  mutate(term = "Male vs Female (ref)") |> 
+  select(term, estimate, conf.low, conf.high)
+
+baltimore_or |> 
+  knitr::kable(
+    col.names = c(
+      "Male vs Female", "Odd ratio", "Lower 95%CI", "Upper 95% CI"
+    ),
+    digits = 3)
+```
+ 
+ **GLM regression for all cities**
+```{r}
+city_glm_df = 
+  homicide_df |>
+  nest(data = - city_state)|>
+  mutate(
+    models = map(data,
+                  ~ glm(resolved ~ victim_age + victim_sex + victim_race,
+            data = ., family = binomial())
+    ),
+    tidy_res = map(
+      models,
+      ~ tidy(., conf.int = TRUE, exponentiate = TRUE)
+    )
+  ) |> 
+  select(city_state, tidy_res) |> 
+  unnest(tidy_res) |> 
+  filter(term == "victim_sexMale") 
+
+city_glm_df |>
+   arrange(estimate) |> 
+  select(city_state, estimate, conf.low, conf.high) |> 
+  mutate(
+    estimate       = round(estimate, 3),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3)
+  ) |> 
+  knitr::kable(
+    col.names = c(
+      "City",
+      "Adjusted OR (Male vs Female)",
+      "Lower 95% CI",
+      "Upper 95% CI"
+    )
+  )
+
+```
+ 
+ Create a plot to show the estimated OR and 95%CI
+ 
+```{r}
+city_glm_df |>
+  mutate(city_state = fct_reorder(city_state, estimate)) |>
+  ggplot(aes(x = city_state, y = estimate)) +
+  geom_point(color = "blue")+
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.5) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Adjusted ORs for solving homicides (Male vs Female)",
+    x = "City",
+    y = "Adjusted OR"
+  ) +
+  theme_minimal()
+```
+
+## Problem 2
+ 
+**import data**
+```{r}
+data("weather_df")
+set.seed(11)
+```
+We’ll focus on a simple linear regression with `tmax` as the response with `tmin` and `prcp` as the predictors, and are interested in the distribution of two quantities estimated from these data:
+
+* Estimated R-squared
+* Ratio of estimated beta_1/beta_2 (β1/β2)
+
+**cleaning the data**
+```{r}
+weather_df1 = weather_df |>
+  drop_na(prcp, tmax, tmin)
+  
+```
+
+checking a simple linear fit
+
+```{r}
+ fit = lm(tmax ~ tmin+ prcp, data = weather_df1)
+summary(fit)
+```
+
+bootstrapping function
+
+```{r}
+boot_function = function(df) {
+  boot_df = df |> 
+    sample_frac(size = 1, replace = TRUE)
+  fit = lm(tmax ~ tmin + prcp, data = boot_df)
+  r_squared = broom::glance(fit) |> 
+    pull(r.squared)
+  beta_1 = broom::tidy(fit) |> 
+    filter(term == "tmin") |> 
+    pull(estimate) 
+  beta_2 = broom::tidy(fit) |> 
+    filter(term == "prcp") |> 
+    pull(estimate) 
+  beta_ratio = beta_1/beta_2
+  
+  tibble(r_squared = r_squared, beta_ratio = beta_ratio)
+}
+```
+Testing function
+```{r}
+boot_function(weather_df1)
+```
+
+Create 5,000 bootstrap samples and fit the model in each sample
+
+```{r}
+weather_sample = 
+  tibble(
+    iter = 1:5000
+  ) |> 
+  mutate(
+    sample = map(iter, \(i) boot_function(df = weather_df1))
+  ) |> 
+  unnest(sample)
+```
+
+Plot the distributions
+
+```{r}
+weather_sample |> 
+  ggplot(aes(x = r_squared)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "white")
+
+weather_sample |> 
+  ggplot(aes(x = beta_ratio)) +
+  geom_histogram(bins = 30, fill = "lightpink", color = "white") 
+```
+
+identify 2.5% and 97.5% quantiles to find 95% confidence intervals for r_squared
+```{r}
+weather_sample |> 
+  summarize(
+    r_squared_lower_ci = quantile(r_squared, 0.025),
+    r_squared_upper_ci = quantile(r_squared, 0.975),
+    beta_ratio_lower = quantile(beta_ratio, 0.025),
+    beta_ratio_upper = quantile(beta_ratio, 0.975)
+  ) |> 
+  knitr::kable(digits = 3)
+```
+
+**Comment**
+The 95% CI of R-squared are 0.934-0.946 which means the model is consistently explaining more thatn 93% of the variation of `tmax`. The 95% CI of the ratio of  β1/β2 are -277.04, -125.02 which means that `tmin` showed strong possitive association with `tmax` while `prcp` has a weak negative association with `tmax`. 
+
+ 
