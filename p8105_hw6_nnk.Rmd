@@ -89,14 +89,9 @@ city_glm_df =
   homicide_df |>
   nest(data = - city_state)|>
   mutate(
-    models = map(data,
-                  ~ glm(resolved ~ victim_age + victim_sex + victim_race,
-            data = ., family = binomial())
-    ),
-    tidy_res = map(
-      models,
-      ~ tidy(., conf.int = TRUE, exponentiate = TRUE)
-    )
+    models = map(data,~ glm(resolved ~ victim_age + victim_sex + victim_race,
+            data = ., family = binomial())),
+    tidy_res = map(models,~ tidy(., conf.int = TRUE, exponentiate = TRUE))
   ) |> 
   select(city_state, tidy_res) |> 
   unnest(tidy_res) |> 
@@ -113,7 +108,7 @@ city_glm_df |>
   knitr::kable(
     col.names = c(
       "City",
-      "Adjusted OR (Male vs Female)",
+      "OR (Male vs Female)",
       "Lower 95% CI",
       "Upper 95% CI"
     )
@@ -132,12 +127,18 @@ city_glm_df |>
   geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
   coord_flip() +
   labs(
-    title = "Adjusted ORs for solving homicides (Male vs Female)",
+    title = "Odd Ratios for solved homicides (Male vs Female)",
     x = "City",
-    y = "Adjusted OR"
+    y = "Odd Ratio"
   ) +
   theme_minimal()
 ```
+
+**comment**
+The Odd ratios of solving crime for male vs female varied across cities ranged from lowest in NY (0.26, 95% CI : 0.133-0.485) to highest in Albuquerque (1.767, 95% CI : 0.825, 3.762). 
+Most cities have OR <1 which indicated the crimes involving female victims were likely to be solved more than the ones with male victims. The 95% CI of these ORs were not including 1 so the differences by victim sex in relation to crime solving status are statistically significant.
+Only six ities with ORs > 1 which means at these cities the crimes were more likely in the solved category for male victims compared to female victim cases. However cities with the ORs higher than 1 also have the 95% CI of the odd ratios included 1 which means there is no statistically significant difference between victim sex (male vs female) in correlation with crime solving status. 
+
 
 ## Problem 2
  
@@ -230,4 +231,125 @@ weather_sample |>
 **Comment**
 The 95% CI of R-squared are 0.934-0.946 which means the model is consistently explaining more thatn 93% of the variation of `tmax`. The 95% CI of the ratio of  β1/β2 are -277.04, -125.02 which means that `tmin` showed strong possitive association with `tmax` while `prcp` has a weak negative association with `tmax`. 
 
+## Problem 3
+Load and clean the data for regression analysis (i.e. use appropriate variable names, convert numeric to factor where appropriate, check for the presence of missing data, etc.).
+
+
+**immport the data**
+```{r}
+bw_df = read_csv("./data/birthweight.csv") |> 
+  janitor::clean_names()
+bw_df |> glimpse()
+```
+
+ Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
  
+ 
+```{r}
+bw_df =
+  bw_df |>
+  mutate(
+    babysex = factor(babysex, labels = c("male", "female")),
+    malform = factor(malform, labels = c("absent", "present")),
+    mrace   = factor(mrace),
+    frace   = factor(frace)
+  )
+bw_df |> 
+  select(bwt, bhead, blength, gaweeks, momage, delwt, smoken, wtgain) |> 
+  pivot_longer(everything()) |> 
+  ggplot(aes(value)) + 
+  geom_histogram(bins = 30) +
+  facet_wrap(~ name, scales = "free")
+```
+ 
+my model included:
+`babysex`, `bhead`, `blength`, `gaweeks`, `momage`, `smoken`, `wtgain` where I also explored the interaction between `gaweeks` and `bhead` and `blength `.
+
+```{r}
+mod_1 = bw_df |>
+  lm(
+    bwt ~ babysex + bhead*blength*gaweeks + momage + smoken + wtgain,
+    data = _
+  )
+
+mod_1 |> tidy()
+
+bw_df_add = bw_df |>
+  add_predictions(mod_1) |>
+  add_residuals(mod_1)
+
+
+bw_df_add |>
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.3, color = "skyblue") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Residuals vs Fitted Values for Proposed Birthweight Model",
+    x = "Fitted birthweight (grams)",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+```
+
+ 
+**Compare your model to two others**
+```{r}
+#main effect only
+mod_2 = bw_df |>
+  lm(bwt ~ + blength + gaweeks, data =_)
+mod_2 |> tidy()
+
+mod_3 = bw_df |>
+  lm(bwt ~ bhead * blength * babysex, data = _)
+mod_3|> tidy()
+
+```
+
+**Cross validation**
+```{r}
+set.seed(123)
+
+cv_df = 
+  crossv_mc(bw_df, n = 100)
+
+cv_results =
+  cv_df |> 
+  mutate(
+    mod_1 = map(train, ~ lm(bwt ~ babysex + bhead*blength*gaweeks + momage + smoken + wtgain, data = .x)),
+    mod_2 = map(train, ~ lm(bwt ~ blength + gaweeks, data = .x)),
+    mod_3 = map(train, ~ lm(bwt ~ bhead * blength * babysex, data = .x)),
+    
+    rmse_1 = map2_dbl(mod_1, test, ~ rmse(model = .x, data = .y)),
+    rmse_2 = map2_dbl(mod_2, test, ~ rmse(model = .x, data = .y)),
+    rmse_3 = map2_dbl(mod_3, test, ~ rmse(model = .x, data = .y))
+  )
+# table for mean rmse
+cv_results |>
+  summarize(
+    rmse_1 = mean(rmse_1),
+    rmse_2 = mean(rmse_2),
+    rmse_3 = mean(rmse_3)
+  ) |> 
+  knitr::kable(digits = 3,
+  col.names = c("Proposed model",
+              "Main effect only",
+              "2- and 3-way interactions of head x length x sex"
+                ))
+# view the variation of the rmse
+cv_results |> 
+  select(starts_with("rmse")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) |> 
+  ggplot(aes(x = model, y = rmse, fill = model)) +
+  geom_boxplot()
+
+```
+
+**Comment**
+Root Mean Squared Error (RMSE) mean and variation showed that the main effect model had the highest errors, eman rsme equal 330.7, compared to the proposed model and the interaction models. The interaction model showed lower RSME value with mean at 288.385. The proposed model:  lm(bwt ~ babysex + bhead*blength*gaweeks + momage + smoken + wtgain) showed the lowest RSME valued, 281. 
+
+
